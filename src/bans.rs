@@ -1,6 +1,7 @@
 pub mod cfg;
 mod diags;
 mod graph;
+pub mod replacements;
 
 use self::cfg::{ValidBuildConfig, ValidConfig, ValidTreeSkip};
 use crate::{
@@ -212,6 +213,7 @@ pub fn check(
         wildcards,
         allow_wildcard_paths,
         build,
+        std_replacements,
     } = ctx.cfg;
 
     let mut sink = sink.into();
@@ -551,19 +553,11 @@ pub fn check(
 
     let build_check_ctx = build.map(|build_config| {
         // Make all paths reported in build diagnostics be relative to cargo_home
-        let cargo_home = home::cargo_home()
-            .map_err(|err| {
-                log::error!("unable to locate $CARGO_HOME: {err}");
-                err
+        let cargo_home = crate::cargo_home()
+            .inspect_err(|error| {
+                log::error!("{error:#}");
             })
-            .ok()
-            .and_then(|pb| {
-                crate::PathBuf::from_path_buf(pb)
-                    .map_err(|pb| {
-                        log::error!("$CARGO_HOME path '{}' is not utf-8", pb.display());
-                    })
-                    .ok()
-            });
+            .ok();
 
         // Keep track of the individual crate configs so we can emit warnings
         // if they're configured but not actually used
@@ -578,9 +572,17 @@ pub fn check(
         }
     });
 
+    let mut replacements = None;
+
     let mut ws_duplicate_packs = Vec::new();
 
     rayon::scope(|scope| {
+        if let Some(rctx) = std_replacements.map(replacements::ReplacementCtx::new) {
+            scope.spawn(|_s| {
+                replacements = rctx.process(ctx.krates);
+            });
+        }
+
         scope.spawn(|scope| {
             let last = ctx.krates.len() - 1;
 
@@ -1131,6 +1133,10 @@ pub fn check(
     }
 
     sink.push(pack);
+
+    if let Some(replacements) = replacements {
+        replacements.emit_diagnostics(ctx.krates, &mut sink, file_id, ctx.colorize);
+    }
 }
 
 pub fn check_build(

@@ -431,3 +431,87 @@ allow-workspace = true
 
     insta::assert_json_snapshot!(diags);
 }
+
+#[allow(clippy::disallowed_types)]
+fn sync_replacements() {
+    static SYNC_REPLACEMENTS: std::sync::Once = std::sync::Once::new();
+    SYNC_REPLACEMENTS.call_once(|| {
+        if let Err(error) = cargo_deny::bans::replacements::ReplacementCtx::sync() {
+            panic!("failed to sync replacements! - {error:#}");
+        }
+    });
+}
+
+/// Tests that std replacements are correctly shown based on the configured scope
+#[test]
+fn std_replacements_by_scope() {
+    use cargo_deny::cfg::Scope;
+
+    sync_replacements();
+
+    for scope in [Scope::None, Scope::All, Scope::Transitive, Scope::Workspace] {
+        for iscope in [Scope::None, Scope::All, Scope::Transitive, Scope::Workspace] {
+            let diags = gather_bans(
+                func_name!(),
+                KrateGather::new("std-replacements"),
+                format!(
+                    "[std-replacements]\nscope = '{}'\nignore-rust-version = '{}'\n",
+                    scope.as_str(),
+                    iscope.as_str()
+                ),
+            );
+
+            insta::assert_json_snapshot!(
+                format!("{}__{}__{}", func_name!(), scope.as_str(), iscope.as_str()),
+                diags
+            );
+        }
+    }
+}
+
+/// Tests that std replacements can be ignored
+#[test]
+fn std_replacement_ignore() {
+    sync_replacements();
+
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("std-replacements"),
+        "[std-replacements]\nscope = 'all'\nignore = ['no-std-net']\n",
+    );
+
+    insta::assert_json_snapshot!(format!("{}__hit", func_name!()), diags);
+
+    // the cfg-if replacement is ignored by default since the crate that depends on it is on an ancient rust-version
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("std-replacements"),
+        "[std-replacements]\nscope = 'all'\nignore = ['no-std-net', 'cfg-if']\n",
+    );
+
+    insta::assert_json_snapshot!(format!("{}__no-hit", func_name!()), diags);
+}
+
+/// Tests that the std replacements lint can be downgraded from the default
+#[test]
+fn std_replacement_downgrades() {
+    sync_replacements();
+
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("std-replacements"),
+        "[std-replacements]\nlevel = 'allow'\n",
+    );
+
+    insta::assert_json_snapshot!(format!("{}__defaults", func_name!()), diags);
+
+    // We don't declare a rust-version in the root manifest, so it triggers by default, but by specifying an explicit
+    // version the lint is no longer triggered because of the version the API was replaced in was much later than 1.0 (obviously)
+    let diags = gather_bans(
+        func_name!(),
+        KrateGather::new("std-replacements"),
+        "[std-replacements]\nlevel = 'allow'\nrust-version = '1.0'\n",
+    );
+
+    insta::assert_json_snapshot!(format!("{}__fallback-rust-version", func_name!()), diags);
+}

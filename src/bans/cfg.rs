@@ -358,6 +358,141 @@ impl<'de> Deserialize<'de> for WorkspaceDepsConfig {
     }
 }
 
+#[cfg_attr(test, derive(serde::Serialize))]
+pub struct StdReplacementConfig {
+    /// What kind of dependency to include in checking
+    ///
+    /// By default we only want to check direct dependencies since they are something the user has control over
+    pub scope: crate::cfg::Scope,
+    /// The lint level used when emitting diagnostics for crates that have a std replacement
+    ///
+    /// Unlike most lint levels we default to deny since this is an optional sub-table of the outer bans config
+    pub level: LintLevel,
+    /// The maximum Rust version that can be considered for replacements
+    ///
+    /// Replacements that were added in rust versions higher than this are not considered. If not specified we attempt
+    /// to determine the MSRV of the crate/workspace, otherwise we emit a diagnostic regardless of version
+    pub rust_version: Option<semver::Version>,
+    /// Crates to ignore emitting diagnostics for
+    ///
+    /// As usual, sometimes it is not possible to "fix" your graph to satisfy your constraints, so we need to allow
+    /// configuration to ignore crates that we would otherwise emit diagnostics for
+    pub ignore: Vec<SpecAndReason>,
+    /// Whether a crate's `rust-version` is respected when considering a crate placed in std
+    ///
+    /// By default, the `rust-version` of a every crate that depends on a crate replaced in std is taken into account,
+    /// ignoring the replacement if all of the versions in which APIs were stabilized are newer
+    pub ignore_rust_version: crate::cfg::Scope,
+}
+
+#[inline]
+pub fn parse_semver(mut v: toml_span::Value<'_>) -> Result<semver::Version, DeserError> {
+    let rvs = v.take_string(Some("semver"))?;
+    let span = v.span;
+
+    // Note we don't use semver::Version parse directly here
+    // - It's overly strict, disallowing versions without a patch, we want to support <major>.<minor> just the
+    // same as cargo does in the rust-version field
+    // - It includes parsing of prerelease versions which is just pointless for our needs
+    let mut iter = memchr::memchr_iter(b'.', rvs.as_bytes());
+    let mut start = 0;
+
+    let Some(major) = iter.next() else {
+        return Err(toml_span::Error {
+            kind: toml_span::ErrorKind::UnexpectedValue {
+                expected: &["non-empty semver"],
+                value: Some(String::new()),
+            },
+            span,
+            line_info: None,
+        }
+        .into());
+    };
+
+    let parse_int = |start: &mut usize, next: usize| -> Result<u32, DeserError> {
+        let s = &rvs[*start..next];
+
+        // + is allowed by std when parsing integers but not allowed in semver, the std parsing will take care of the
+        // rest of the invalid inputs
+        if s.starts_with('+') {
+            return Err(toml_span::Error {
+                kind: toml_span::ErrorKind::InvalidCharInString('+'),
+                span: (span.start + *start..span.start + *start + 1).into(),
+                line_info: None,
+            }
+            .into());
+        }
+
+        match s.parse() {
+            Ok(v) => {
+                *start = next + 1;
+                Ok(v)
+            }
+            Err(err) => Err(toml_span::Error {
+                kind: toml_span::ErrorKind::Custom(err.to_string().into()),
+                span: (span.start + *start..span.start + next).into(),
+                line_info: None,
+            }
+            .into()),
+        }
+    };
+
+    let major = parse_int(&mut start, major)?;
+
+    // There is only 1 major Rust version after more than 10 years, so this isn't really useful, but that's up to the user
+    let Some(minor) = iter.next() else {
+        return Ok(semver::Version::new(major as _, 0, 0));
+    };
+
+    let minor = parse_int(&mut start, minor)?;
+
+    let Some(patch) = iter.next() else {
+        return Ok(semver::Version::new(major as _, minor as _, 0));
+    };
+
+    let patch = parse_int(&mut start, patch)?;
+
+    // Ensure there aren't more components
+    if let Some(invalid) = iter.next() {
+        return Err(toml_span::Error {
+            kind: toml_span::ErrorKind::Custom("semver had additional components".into()),
+            span: (invalid..span.end).into(),
+            line_info: None,
+        }
+        .into());
+    }
+
+    Ok(semver::Version::new(major as _, minor as _, patch as _))
+}
+
+impl<'de> Deserialize<'de> for StdReplacementConfig {
+    fn deserialize(value: &mut Value<'de>) -> Result<Self, DeserError> {
+        let mut th = TableHelper::new(value)?;
+
+        let scope = th.optional("scope").unwrap_or(crate::cfg::Scope::Workspace);
+        let level = th.optional("level").unwrap_or(LintLevel::Deny);
+        let rust_version = if let Some((_, rv)) = th.take("rust-version") {
+            Some(parse_semver(rv)?)
+        } else {
+            None
+        };
+        let ignore = th.optional("ignore").unwrap_or_default();
+        let ignore_rust_version = th
+            .optional("ignore-rust-version")
+            .unwrap_or(crate::cfg::Scope::None);
+
+        th.finalize(None)?;
+
+        Ok(Self {
+            scope,
+            level,
+            rust_version,
+            ignore,
+            ignore_rust_version,
+        })
+    }
+}
+
 pub struct Config {
     /// How to handle multiple versions of the same crate
     pub multiple_versions: LintLevel,
@@ -398,6 +533,8 @@ pub struct Config {
     pub allow_build_scripts: Option<Spanned<Vec<PackageSpec>>>,
     /// Options for crates that run at build time
     pub build: Option<BuildConfig>,
+    /// Options for checking crates against the std replacement list
+    pub std_replacements: Option<StdReplacementConfig>,
 }
 
 impl Default for Config {
@@ -419,6 +556,7 @@ impl Default for Config {
             allow_wildcard_paths: false,
             allow_build_scripts: None,
             build: None,
+            std_replacements: None,
         }
     }
 }
@@ -446,6 +584,7 @@ impl<'de> Deserialize<'de> for Config {
         let build = th.optional("build");
 
         let workspace_dependencies = th.optional("workspace-dependencies");
+        let std_replacements = th.optional("std-replacements");
 
         th.finalize(None)?;
 
@@ -466,6 +605,7 @@ impl<'de> Deserialize<'de> for Config {
             allow_wildcard_paths,
             allow_build_scripts,
             build,
+            std_replacements,
         })
     }
 }
@@ -783,6 +923,7 @@ impl crate::cfg::UnvalidatedConfig for Config {
             allow_wildcard_paths: self.allow_wildcard_paths,
             tree_skipped: self.skip_tree,
             build,
+            std_replacements: self.std_replacements,
         }
     }
 }
@@ -957,6 +1098,7 @@ pub struct ValidConfig {
     pub wildcards: LintLevel,
     pub allow_wildcard_paths: bool,
     pub build: Option<ValidBuildConfig>,
+    pub std_replacements: Option<StdReplacementConfig>,
 }
 
 #[cfg(test)]

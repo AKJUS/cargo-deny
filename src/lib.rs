@@ -8,7 +8,7 @@ pub mod advisories;
 pub mod bans;
 pub mod cfg;
 pub mod diag;
-/// Configuration and logic for checking crate licenses
+pub mod git;
 pub mod licenses;
 pub mod root_cfg;
 pub mod sarif;
@@ -255,6 +255,7 @@ pub struct Krate {
     pub features: BTreeMap<String, Vec<String>>,
     pub targets: Vec<cm::Target>,
     pub publish: Option<Vec<String>>,
+    pub rust_version: Option<Version>,
 }
 
 #[cfg(test)]
@@ -275,6 +276,7 @@ impl Default for Krate {
             manifest_path: PathBuf::new(),
             repository: None,
             publish: None,
+            rust_version: None,
         }
     }
 }
@@ -348,6 +350,7 @@ impl From<cm::Package> for Krate {
             // },
             features: pkg.features,
             publish: pkg.publish,
+            rust_version: pkg.rust_version,
         }
     }
 }
@@ -612,6 +615,39 @@ pub fn krates_with_index(
     kb.with_crates_io_index(Box::new(index_cache_build));
 
     Ok(())
+}
+
+use anyhow::Context as _;
+
+#[inline]
+#[allow(clippy::disallowed_types)]
+fn not_utf8(p: std::path::PathBuf, id: &str) -> anyhow::Error {
+    anyhow::anyhow!("{id}({p:?}) is not a utf-8 path")
+}
+
+#[inline]
+pub fn home() -> anyhow::Result<PathBuf> {
+    let home = std::env::home_dir().context("$HOME is not available")?;
+    PathBuf::from_path_buf(home).map_err(|p| not_utf8(p, "$HOME"))
+}
+
+pub fn cargo_home() -> anyhow::Result<PathBuf> {
+    let Some(ch) = std::env::var_os("CARGO_HOME").filter(|ch| !ch.is_empty()) else {
+        let mut ch = home()?;
+        ch.push(".cargo");
+        return Ok(ch);
+    };
+
+    let home = PathBuf::from_os_string(ch).map_err(|p| not_utf8(p.into(), "$CARGO_HOME"))?;
+    if home.is_absolute() {
+        return Ok(home);
+    }
+
+    let cwd = std::env::current_dir().context("failed to retrieve current working directory")?;
+    let mut cwd =
+        PathBuf::from_path_buf(cwd).map_err(|p| not_utf8(p, "current working directory"))?;
+    cwd.push(home);
+    Ok(cwd)
 }
 
 #[cfg(test)]
