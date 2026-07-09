@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
+## [0.20.1] - 2026-07-09
 ### Fixed
 - [PR#883](https://github.com/EmbarkStudios/cargo-deny/pull/883) fixed snapshot filenames on Windows which caused the release binary publish to fail.
 
@@ -836,7 +837,8 @@ Now each license has to be explicitly approved, either by listing them in `licen
 - Initial implementation release
 
 <!-- next-url -->
-[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.20.0...HEAD
+[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.20.1...HEAD
+[0.20.1]: https://github.com/EmbarkStudios/cargo-deny/compare/0.20.0...0.20.1
 [0.20.0]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.9...0.20.0
 [0.19.9]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.8...0.19.9
 [0.19.8]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.7...0.19.8
