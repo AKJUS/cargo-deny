@@ -1214,18 +1214,21 @@ pub fn check_build(
         .find_map(|(i, ae)| crate::match_krate(krate, &ae.spec).then_some((i, ae)))
         .unzip();
 
+    let build_script_path = krate.targets.iter().find_map(|t| {
+        t.kind
+            .contains(&TargetKind::CustomBuild)
+            .then_some(&t.src_path)
+    });
+
     // If the build script hashes to the same value and required features are not actually
     // set on the crate, we can skip it
     if let Some(kc) = krate_config
         && let Some(bsc) = &kc.build_script
-        && let Some(path) = krate
-            .targets
-            .iter()
-            .find_map(|t| (t.name == "build-script-build").then_some(&t.src_path))
+        && let Some(path) = build_script_path
     {
         let root = &krate.manifest_path.parent().unwrap();
-        match validate_file_checksum(path, &bsc.value) {
-            Ok(_) => {
+        match bsc.value.validate_checksum(path) {
+            Ok((true, _)) => {
                 pack.push(diags::ChecksumMatch {
                     path: diags::HomePath { path, root, home },
                     checksum: bsc,
@@ -1263,12 +1266,23 @@ pub fn check_build(
                     file_id,
                 });
             }
+            Ok((false, calculated)) => {
+                pack.push(diags::ChecksumMismatch {
+                    path: diags::HomePath { path, root, home },
+                    checksum: bsc,
+                    severity: Some(Severity::Warning),
+                    error: None,
+                    calculated: Some(calculated),
+                    file_id,
+                });
+            }
             Err(err) => {
                 pack.push(diags::ChecksumMismatch {
                     path: diags::HomePath { path, root, home },
                     checksum: bsc,
                     severity: Some(Severity::Warning),
-                    error: format!("build script failed checksum: {err:#}"),
+                    error: Some(format!("build script failed checksum: {err:#}")),
+                    calculated: None,
                     file_id,
                 });
             }
@@ -1276,7 +1290,17 @@ pub fn check_build(
     }
 
     if !build_script_allowed {
-        pack.push(diags::BuildScriptNotAllowed { krate });
+        let build_script = build_script_path.and_then(|path| {
+            let root = krate.manifest_path.parent().unwrap();
+            cfg::Checksum::checksum_file(path)
+                .ok()
+                .map(|checksum| (diags::HomePath { path, root, home }, checksum))
+        });
+
+        pack.push(diags::BuildScriptNotAllowed {
+            krate,
+            build_script,
+        });
         return kc_index;
     }
 
@@ -1447,7 +1471,7 @@ pub fn check_build(
             drop(tx);
         },
         || {
-            // Note that since we ship off the checksum validation to a threads the order is
+            // Note that since we ship off the checksum validation to threads the order is
             // not guaranteed, so we just put them in a btreemap so they are consistently
             // ordered and don't trigger test errors or cause confusing output for users
             let checksum_diags = parking_lot::Mutex::new(std::collections::BTreeMap::new());
@@ -1456,28 +1480,36 @@ pub fn check_build(
                     s.spawn(|_s| {
                         let absolute_path = path;
                         let path = &absolute_path;
-                        if let Err(err) = validate_file_checksum(&absolute_path, &checksum.value) {
-                            let diag: Diag = diags::ChecksumMismatch {
-                                path: diags::HomePath { path, root, home },
-                                checksum,
-                                severity: None,
-                                error: format!("{err:#}"),
-                                file_id,
-                            }
-                            .into();
 
-                            checksum_diags.lock().insert(absolute_path, diag);
-                        } else {
-                            let diag: Diag = diags::ChecksumMatch {
+                        let diag: Diag = match checksum.value.validate_checksum(&absolute_path) {
+                            Ok((true, _)) => diags::ChecksumMatch {
                                 path: diags::HomePath { path, root, home },
                                 checksum,
                                 severity: None,
                                 file_id,
                             }
-                            .into();
+                            .into(),
+                            Ok((false, calculated)) => diags::ChecksumMismatch {
+                                path: diags::HomePath { path, root, home },
+                                checksum,
+                                severity: None,
+                                error: None,
+                                calculated: Some(calculated),
+                                file_id,
+                            }
+                            .into(),
+                            Err(error) => diags::ChecksumMismatch {
+                                path: diags::HomePath { path, root, home },
+                                checksum,
+                                severity: None,
+                                error: Some(format!("{error:#}")),
+                                calculated: None,
+                                file_id,
+                            }
+                            .into(),
+                        };
 
-                            checksum_diags.lock().insert(absolute_path, diag);
-                        }
+                        checksum_diags.lock().insert(absolute_path, diag);
                     });
                 }
             });
@@ -1574,46 +1606,36 @@ fn check_is_executable(
     }
 }
 
-/// Validates the buffer matches the expected SHA-256 checksum
-fn validate_checksum(
-    mut stream: impl std::io::Read,
-    expected: &cfg::Checksum,
-) -> anyhow::Result<()> {
-    let digest = {
-        let mut dc = ring::digest::Context::new(&ring::digest::SHA256);
-        let mut chunk = [0; 8 * 1024];
-        loop {
-            let read = stream.read(&mut chunk)?;
-            if read == 0 {
-                break;
+impl cfg::Checksum {
+    fn checksum_file(path: &crate::Path) -> anyhow::Result<Self> {
+        use std::io::Read;
+
+        let mut file = std::fs::File::open(path)?;
+
+        let digest = {
+            let mut dc = ring::digest::Context::new(&ring::digest::SHA256);
+            let mut chunk = [0; 8 * 1024];
+            loop {
+                let read = file.read(&mut chunk)?;
+                if read == 0 {
+                    break;
+                }
+                dc.update(&chunk[..read]);
             }
-            dc.update(&chunk[..read]);
-        }
-        dc.finish()
-    };
+            dc.finish()
+        };
 
-    let digest = digest.as_ref();
-    if digest != expected.0 {
-        let mut hs = [0u8; 64];
-        const CHARS: &[u8] = b"0123456789abcdef";
-        for (i, &byte) in digest.iter().enumerate() {
-            let i = i * 2;
-            hs[i] = CHARS[(byte >> 4) as usize];
-            hs[i + 1] = CHARS[(byte & 0xf) as usize];
-        }
-
-        let digest = std::str::from_utf8(&hs).unwrap();
-        anyhow::bail!("checksum mismatch, calculated {digest}");
+        let mut bytes = [0; 32];
+        bytes.copy_from_slice(digest.as_ref());
+        Ok(Self(bytes))
     }
 
-    Ok(())
-}
-
-#[inline]
-fn validate_file_checksum(path: &crate::Path, expected: &cfg::Checksum) -> anyhow::Result<()> {
-    let file = std::fs::File::open(path)?;
-    validate_checksum(std::io::BufReader::new(file), expected)?;
-    Ok(())
+    /// Validates the files matches the expected SHA-256 checksum
+    #[inline]
+    fn validate_checksum(&self, path: &crate::Path) -> anyhow::Result<(bool, Self)> {
+        let actual = Self::checksum_file(path)?;
+        Ok((actual == *self, actual))
+    }
 }
 
 fn check_workspace_duplicates(
