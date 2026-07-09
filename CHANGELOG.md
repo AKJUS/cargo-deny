@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- next-header -->
 ## [Unreleased] - ReleaseDate
+## [0.20.0] - 2026-07-09
 ### Changed
 - [PR#881](https://github.com/EmbarkStudios/cargo-deny/pull/881) refactored the CLI, moving some duplicated options/flags into the root and removing several deprecated options/flags/values. See the PR for a full list of changes.
 
@@ -832,7 +833,8 @@ Now each license has to be explicitly approved, either by listing them in `licen
 - Initial implementation release
 
 <!-- next-url -->
-[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.9...HEAD
+[Unreleased]: https://github.com/EmbarkStudios/cargo-deny/compare/0.20.0...HEAD
+[0.20.0]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.9...0.20.0
 [0.19.9]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.8...0.19.9
 [0.19.8]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.7...0.19.8
 [0.19.7]: https://github.com/EmbarkStudios/cargo-deny/compare/0.19.6...0.19.7
