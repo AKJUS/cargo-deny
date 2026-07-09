@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [PR#879](https://github.com/EmbarkStudios/cargo-deny/pull/879) resolved [#873](https://github.com/EmbarkStudios/cargo-deny/issues/873) by adding a new [`bans.std-replacements`](https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html#the-std-replacements-field-optional) lint which checks the graph for crates.io sourced crates that have been partially or fully replaced in `std` and/or `core`.
 
 ### Fixed
+- [PR#880](https://github.com/EmbarkStudios/cargo-deny/pull/880) resolved [#765](https://github.com/EmbarkStudios/cargo-deny/issues/765) by respecting non-default build script paths in manifests.
 - [PR#881](https://github.com/EmbarkStudios/cargo-deny/pull/881) resolved [#874](https://github.com/EmbarkStudios/cargo-deny/issues/874) by cleaning up the CLI, deduplicating some options/flags that caused bug in the `list` subcommand.
 
 ## [0.19.9] - 2026-06-15
